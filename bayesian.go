@@ -2,6 +2,7 @@ package bayesian
 
 import (
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -33,7 +34,7 @@ type Class string
 type Classifier struct {
 	Classes         []Class
 	learned         int   // docs learned
-	seen            int32 // docs seen
+	seen            int64 // docs seen
 	datas           map[Class]*classData
 	tfIdf           bool
 	DidConvertTfIdf bool // we can't classify a TF-IDF classifier if we haven't yet
@@ -44,12 +45,12 @@ type Classifier struct {
 // Classifier objects whose fields are modifiable by
 // reflection and are therefore writeable by gob.
 type serializableClassifier struct {
-	Classes         []Class
-	Learned         int
-	Seen            int
-	Datas           map[Class]*classData
-	TfIdf           bool
-	DidConvertTfIdf bool
+	Classes         []Class              `json:"classes"`
+	Learned         int                  `json:"learned"`
+	Seen            int                  `json:"seen"`
+	Datas           map[Class]*classData `json:"datas"`
+	TfIdf           bool                 `json:"tf_idf"`
+	DidConvertTfIdf bool                 `json:"did_convert_tf_idf"`
 }
 
 // classData holds the frequency data for words in a
@@ -57,9 +58,9 @@ type serializableClassifier struct {
 // structure with a trie-like structure for more
 // efficient storage.
 type classData struct {
-	Freqs   map[string]float64
-	FreqTfs map[string][]float64
-	Total   int
+	Freqs   map[string]float64   `json:"freqs"`
+	FreqTfs map[string][]float64 `json:"freqTfs"`
+	Total   int                  `json:"total"`
 }
 
 // newClassData creates a new empty classData node.
@@ -77,7 +78,7 @@ func (d *classData) getWordProb(word string) float64 {
 	if !ok {
 		return defaultProb
 	}
-	return float64(value) / float64(d.Total)
+	return value / float64(d.Total)
 }
 
 // getWordsProb returns P(D|C_j) -- the probability of seeing
@@ -170,13 +171,33 @@ func NewClassifierFromFile(name string) (c *Classifier, err error) {
 	return NewClassifierFromReader(file)
 }
 
-// NewClassifierFromReader: This actually does the deserializing of a Gob encoded classifier
+// NewClassifierFromReader This actually does the deserializing of a Gob encoded classifier
 func NewClassifierFromReader(r io.Reader) (c *Classifier, err error) {
 	dec := gob.NewDecoder(r)
 	w := new(serializableClassifier)
 	err = dec.Decode(w)
 
-	return &Classifier{w.Classes, w.Learned, int32(w.Seen), w.Datas, w.TfIdf, w.DidConvertTfIdf}, err
+	return &Classifier{w.Classes, w.Learned, int64(w.Seen), w.Datas, w.TfIdf, w.DidConvertTfIdf}, err
+}
+
+// NewClassifierFromJson This actually does the deserializing of a Gob encoded classifier
+func NewClassifierFromJson(data []byte) (c *Classifier, err error) {
+	w := new(serializableClassifier)
+
+	err = json.Unmarshal(data, w)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &Classifier{
+		w.Classes,
+		w.Learned,
+		int64(w.Seen),
+		w.Datas,
+		w.TfIdf,
+		w.DidConvertTfIdf,
+	}, err
 }
 
 // getPriors returns the prior probabilities for the
@@ -210,9 +231,8 @@ func (c *Classifier) Learned() int {
 // Seen returns the number of documents ever classified
 // in the lifetime of this classifier.
 func (c *Classifier) Seen() int {
-	return int(atomic.LoadInt32(&c.seen))
+	return int(atomic.LoadInt64(&c.seen))
 }
-
 
 // IsTfIdf returns true if we are a classifier of type TfIdf
 func (c *Classifier) IsTfIdf() bool {
@@ -346,7 +366,7 @@ func (c *Classifier) LogScores(document []string) (scores []float64, inx int, st
 		scores[index] = score
 	}
 	inx, strict = findMax(scores)
-	atomic.AddInt32(&c.seen, 1)
+	atomic.AddInt64(&c.seen, 1)
 	return scores, inx, strict
 }
 
@@ -384,7 +404,7 @@ func (c *Classifier) ProbScores(doc []string) (scores []float64, inx int, strict
 		scores[i] /= sum
 	}
 	inx, strict = findMax(scores)
-	atomic.AddInt32(&c.seen, 1)
+	atomic.AddInt64(&c.seen, 1)
 	return scores, inx, strict
 }
 
@@ -437,7 +457,7 @@ func (c *Classifier) SafeProbScores(doc []string) (scores []float64, inx int, st
 	if inx != logInx || strict != logStrict {
 		err = ErrUnderflow
 	}
-	atomic.AddInt32(&c.seen, 1)
+	atomic.AddInt64(&c.seen, 1)
 	return scores, inx, strict, err
 }
 
@@ -468,12 +488,11 @@ func (c *Classifier) WordFrequencies(words []string) (freqMatrix [][]float64) {
 func (c *Classifier) WordsByClass(class Class) (freqMap map[string]float64) {
 	freqMap = make(map[string]float64)
 	for word, cnt := range c.datas[class].Freqs {
-		freqMap[word] = float64(cnt) / float64(c.datas[class].Total)
+		freqMap[word] = cnt / float64(c.datas[class].Total)
 	}
 
 	return freqMap
 }
-
 
 // WriteToFile serializes this classifier to a file.
 func (c *Classifier) WriteToFile(name string) (err error) {
@@ -483,14 +502,17 @@ func (c *Classifier) WriteToFile(name string) (err error) {
 	}
 	defer file.Close()
 
-	return c.WriteTo(file)
+	_, err = c.WriteTo(file)
+
+	return err
 }
 
-// WriteClassesToFile writes all classes to files.
+// WriteClassesToFile writes all classes to file.
 func (c *Classifier) WriteClassesToFile(rootPath string) (err error) {
 	for name := range c.datas {
-		c.WriteClassToFile(name, rootPath)
+		err = c.WriteClassToFile(name, rootPath)
 	}
+
 	return
 }
 
@@ -509,9 +531,8 @@ func (c *Classifier) WriteClassToFile(name Class, rootPath string) (err error) {
 	return
 }
 
-
 // WriteTo serializes this classifier to GOB and write to Writer.
-func (c *Classifier) WriteTo(w io.Writer) (err error) {
+func (c *Classifier) WriteTo(w io.Writer) (n int64, err error) {
 	enc := gob.NewEncoder(w)
 	err = enc.Encode(&serializableClassifier{c.Classes, c.learned, int(c.seen), c.datas, c.tfIdf, c.DidConvertTfIdf})
 
@@ -536,6 +557,25 @@ func (c *Classifier) ReadClassFromFile(class Class, location string) (err error)
 	c.learned++
 	c.datas[class] = w
 	return
+}
+
+func (c *Classifier) ToJson() ([]byte, error) {
+	data := &serializableClassifier{
+		c.Classes,
+		c.learned,
+		int(c.seen),
+		c.datas,
+		c.tfIdf,
+		c.DidConvertTfIdf,
+	}
+
+	result, err := json.Marshal(data)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // findMax finds the maximum of a set of scores; if the

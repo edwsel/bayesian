@@ -1,6 +1,9 @@
 package bayesian
 
-import "testing"
+import (
+	"testing"
+)
+
 import "fmt"
 import "os"
 
@@ -11,7 +14,7 @@ const (
 
 func Assert(t *testing.T, condition bool, args ...interface{}) {
 	if !condition {
-		t.Fatal(args)
+		t.Fatal(args...)
 	}
 }
 
@@ -352,6 +355,24 @@ func TestTfIdClassifier_LogScore(t *testing.T) {
 	Assert(t, score[0] > score[1], "Class 'Good' should be closer to 0 than Class 'Bad' - both will be negative") // this is good
 	Assert(t, likely == 0, "Class should be 'Good'")
 	Assert(t, strict == true, "No tie's")
-	fmt.Printf("%#v", score)
+}
 
+func TestJson(t *testing.T) {
+	c := NewClassifier(Good, Bad)
+	c.Learn([]string{"tall", "handsome", "rich"}, Good)
+	dataJson, err := c.ToJson()
+	Assert(t, err == nil, "could make json:", err)
+	d, err := NewClassifierFromJson(dataJson)
+	Assert(t, err == nil, "could not read:", err)
+	scores, _, _ := d.LogScores([]string{"a", "b", "c"})
+	t.Log(scores)
+	data := d.datas[Good]
+	Assert(t, data.Total == 3)
+	Assert(t, data.getWordProb("tall") == float64(1)/float64(3), "tall")
+	Assert(t, data.getWordProb("rich") == float64(1)/float64(3), "rich")
+	Assert(t, d.Learned() == 1)
+	count := d.WordCount()
+	Assert(t, count[0] == 3)
+	Assert(t, count[1] == 0)
+	Assert(t, d.Seen() == 1)
 }
